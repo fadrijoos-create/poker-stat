@@ -322,7 +322,7 @@ const [visiblePlayers, setVisiblePlayers] = useState([]);
 
   const isAdmin = session?.role === "admin";
   const isGuest = session?.role === "guest";
-
+const canEditSessions = isAdmin || isGuest;
   const currentGroup = useMemo(() => {
     const found = state.groups.find((g) => g.id === state.currentGroupId);
     return found || state.groups[0];
@@ -598,7 +598,7 @@ const filteredSeries = cumulativeSeries.filter((s) =>
   };
 
   const addSession = () => {
-    if (!isAdmin || !newSessionTitle.trim()) return;
+    if (!canEditSessions || !newSessionTitle.trim()) return;
     const sessionObj = {
       id: uid(),
       title: newSessionTitle.trim(),
@@ -662,7 +662,7 @@ const filteredSeries = cumulativeSeries.filter((s) =>
   };
 
   const deleteSession = (sessionId) => {
-    if (!isAdmin) return;
+    if (!canEditSessions) return;
     setState((prev) => ({
       ...prev,
       groups: prev.groups.map((g) =>
@@ -880,7 +880,7 @@ const filteredSeries = cumulativeSeries.filter((s) =>
                 </div>
               </Card>
 
-              {isAdmin ? (
+              {canEditSessions ? (
                 <Card title="Neue Session" subtitle="Nur für den Admin sichtbar.">
                   <div className="space-y-3">
                     <input value={newSessionTitle} onChange={(e) => setNewSessionTitle(e.target.value)} placeholder="Titel" className="w-full rounded-2xl bg-slate-950 border border-slate-800 px-4 py-3 outline-none" />
@@ -917,7 +917,7 @@ const filteredSeries = cumulativeSeries.filter((s) =>
 
             <Card title={selectedSession ? `Session · ${selectedSession.title}` : "Session ansehen"} subtitle={selectedSession ? fmtDate(selectedSession.date) : "Wähle links eine Session aus."} className="xl:col-span-2">
               {selectedSession ? (
-                isAdmin ? (
+  canEditSessions ? (
                   <>
                     <div
                       className={`mb-4 rounded-2xl border px-4 py-3 ${
@@ -1057,7 +1057,7 @@ const filteredSeries = cumulativeSeries.filter((s) =>
               )}
             </Card>
 
-            {isAdmin ? (
+            {canEditSessions ? (
               <Card title="Neue Session" subtitle="Session hinzufügen und danach Einträge erfassen.">
                 <div className="space-y-3">
                   <input value={newSessionTitle} onChange={(e) => setNewSessionTitle(e.target.value)} placeholder="Titel" className="w-full rounded-2xl bg-slate-950 border border-slate-800 px-4 py-3 outline-none" />
