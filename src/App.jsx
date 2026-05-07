@@ -621,7 +621,7 @@ const filteredSeries = cumulativeSeries.filter((s) =>
   };
 
   const saveDraft = () => {
-    if (!isAdmin || !selectedSession) return;
+    if (!canEditSessions || !selectedSession) return;
     const updated = {
       ...selectedSession,
       results: players.map((p) => {
