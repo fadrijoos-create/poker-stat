@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { supabase } from "./lib/supabase";
+
 const STORAGE_KEY = "poker_stat_state_v5";
 const SESSION_KEY = "poker_stat_session_v5";
 const LEGACY_STORAGE_KEYS = [
@@ -57,15 +58,14 @@ const safeParse = (value) => {
 const loadState = () => {
   if (typeof window === "undefined") return emptyState();
 
-  const keys = [STORAGE_KEY, ...LEGACY_STORAGE_KEYS];
-  for (const key of keys) {
+  for (const key of [STORAGE_KEY, ...LEGACY_STORAGE_KEYS]) {
     try {
       const stored = window.localStorage.getItem(key);
       if (!stored) continue;
       const parsed = safeParse(stored);
       if (parsed?.groups?.length) return parsed;
     } catch {
-      // ignore and try the next key
+      // ignore and try next key
     }
   }
 
@@ -75,15 +75,14 @@ const loadState = () => {
 const loadSession = () => {
   if (typeof window === "undefined") return null;
 
-  const keys = [SESSION_KEY, ...LEGACY_SESSION_KEYS];
-  for (const key of keys) {
+  for (const key of [SESSION_KEY, ...LEGACY_SESSION_KEYS]) {
     try {
       const stored = window.localStorage.getItem(key);
       if (!stored) continue;
       const parsed = safeParse(stored);
       if (parsed) return parsed;
     } catch {
-      // ignore and try the next key
+      // ignore and try next key
     }
   }
 
@@ -168,7 +167,6 @@ function useSvgSize(ref, fallback = { width: 800, height: 420 }) {
     update();
     const observer = new ResizeObserver(update);
     observer.observe(ref.current);
-
     return () => observer.disconnect();
   }, [ref]);
 
@@ -193,7 +191,7 @@ function LineGraph({ series, labels }) {
     return margin.left + (index / (total - 1)) * plotW;
   };
 
-  const yFor = (value) => margin.top + (maxVal - value) / range * plotH;
+  const yFor = (value) => margin.top + ((maxVal - value) / range) * plotH;
 
   const yTicks = 5;
   const tickValues = Array.from({ length: yTicks + 1 }, (_, i) => maxVal - (range / yTicks) * i);
@@ -257,9 +255,9 @@ function BarGraph({ data }) {
   const minVal = values.length ? Math.min(0, ...values) : 0;
   const maxVal = values.length ? Math.max(0, ...values) : 1;
   const range = maxVal - minVal || 1;
-  const yFor = (value) => margin.top + (maxVal - value) / range * plotH;
+  const yFor = (value) => margin.top + ((maxVal - value) / range) * plotH;
   const zeroY = yFor(0);
-  const barW = data.length ? Math.max(14, Math.min(48, plotW / data.length * 0.65)) : 18;
+  const barW = data.length ? Math.max(14, Math.min(48, (plotW / data.length) * 0.65)) : 18;
   const gap = data.length ? plotW / data.length : 0;
   const yTicks = 4;
   const tickValues = Array.from({ length: yTicks + 1 }, (_, i) => maxVal - (range / yTicks) * i);
@@ -316,45 +314,10 @@ export default function App() {
   const [newPlayerName, setNewPlayerName] = useState("");
   const [newSessionTitle, setNewSessionTitle] = useState("");
   const [newSessionDate, setNewSessionDate] = useState(new Date().toISOString().slice(0, 10));
-const [ready, setReady] = useState(false);
+  const [syncReady, setSyncReady] = useState(false);
+  const [syncStatus, setSyncStatus] = useState(supabase ? "Verbinde mit Supabase…" : "Lokaler Modus aktiv");
+  const [syncError, setSyncError] = useState("");
 
-useEffect(() => {
-  const load = async () => {
-    const { data, error } = await supabase
-      .from("poker_stat_state")
-      .select("payload")
-      .eq("id", "main")
-      .maybeSingle();
-
-    if (!error && data?.payload) {
-      setState(data.payload);
-    } else {
-      await supabase.from("poker_stat_state").upsert({
-        id: "main",
-        payload: state,
-        updated_at: new Date().toISOString(),
-      });
-    }
-
-    setReady(true);
-  };
-
-  load();
-}, []);
-
-useEffect(() => {
-  if (!ready) return;
-
-  const save = async () => {
-    await supabase.from("poker_stat_state").upsert({
-      id: "main",
-      payload: state,
-      updated_at: new Date().toISOString(),
-    });
-  };
-
-  save();
-}, [state, ready]);
   const isAdmin = session?.role === "admin";
   const isGuest = session?.role === "guest";
 
@@ -370,7 +333,84 @@ useEffect(() => {
     [currentGroup]
   );
 
- 
+  useEffect(() => {
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  }, [state]);
+
+  useEffect(() => {
+    if (session) window.localStorage.setItem(SESSION_KEY, JSON.stringify(session));
+    else window.localStorage.removeItem(SESSION_KEY);
+  }, [session]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadFromSupabase = async () => {
+      if (!supabase) {
+        setSyncReady(true);
+        return;
+      }
+
+      try {
+        setSyncStatus("Lade Online-Speicher…");
+        const { data, error } = await supabase
+          .from("poker_stat_state")
+          .select("payload")
+          .eq("id", "main")
+          .maybeSingle();
+
+        if (cancelled) return;
+        if (error) throw error;
+
+        if (data?.payload?.groups?.length) {
+          setState(data.payload);
+          setSyncStatus("Online-Speicher geladen");
+        } else {
+          await supabase.from("poker_stat_state").upsert({
+            id: "main",
+            payload: state,
+            updated_at: new Date().toISOString(),
+          });
+          setSyncStatus("Online-Speicher erstellt");
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setSyncError(err?.message || "Supabase Fehler");
+          setSyncStatus("Lokaler Modus aktiv");
+        }
+      } finally {
+        if (!cancelled) setSyncReady(true);
+      }
+    };
+
+    loadFromSupabase();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!syncReady || !supabase) return;
+
+    const timer = setTimeout(async () => {
+      try {
+        setSyncError("");
+        setSyncStatus("Speichere online…");
+        const { error } = await supabase.from("poker_stat_state").upsert({
+          id: "main",
+          payload: state,
+          updated_at: new Date().toISOString(),
+        });
+        if (error) throw error;
+        setSyncStatus("Online gespeichert");
+      } catch (err) {
+        setSyncError(err?.message || "Supabase Speichern fehlgeschlagen");
+        setSyncStatus("Lokale Sicherung aktiv");
+      }
+    }, 400);
+
+    return () => clearTimeout(timer);
+  }, [state, syncReady]);
 
   useEffect(() => {
     if (!selectedSessionId && sessions.length) setSelectedSessionId(sessions[sessions.length - 1].id);
@@ -393,7 +433,12 @@ useEffect(() => {
     const next = {};
     players.forEach((p) => {
       const r = selectedSession.results.find((x) => x.playerId === p.id);
-      next[p.id] = { amount: r?.amount ?? 0, skipped: r?.skipped ?? false };
+      next[p.id] = {
+        buyIn: r?.buyIn ?? 0,
+        cashOut: r?.cashOut ?? 0,
+        amount: r?.amount ?? 0,
+        skipped: r?.skipped ?? false,
+      };
     });
     setDraft(next);
   }, [selectedSessionId, currentGroupId, players, selectedSession]);
@@ -472,6 +517,10 @@ useEffect(() => {
   const currentPlayer = players.find((p) => p.id === selectedGraphPlayerId) || players[0] || null;
   const currentPlayerStats = currentPlayer ? stats.find((s) => s.id === currentPlayer.id) : null;
   const totalGroupProfit = leaderboardTotal.reduce((sum, p) => sum + p.total, 0);
+  const selectedSessionBalance = useMemo(() => {
+    if (!selectedSession) return 0;
+    return selectedSession.results.reduce((sum, r) => sum + (r.skipped ? 0 : Number(r.amount || 0)), 0);
+  }, [selectedSession]);
 
   const handleAdminLogin = (e) => {
     e.preventDefault();
@@ -541,7 +590,13 @@ useEffect(() => {
       id: uid(),
       title: newSessionTitle.trim(),
       date: newSessionDate,
-      results: players.map((p) => ({ playerId: p.id, amount: 0, skipped: true })),
+      results: players.map((p) => ({
+        playerId: p.id,
+        buyIn: 0,
+        cashOut: 0,
+        amount: 0,
+        skipped: true,
+      })),
     };
     setState((prev) => ({
       ...prev,
@@ -556,16 +611,39 @@ useEffect(() => {
     if (!isAdmin || !selectedSession) return;
     const updated = {
       ...selectedSession,
-      results: players.map((p) => ({
-        playerId: p.id,
-        amount: Number(draft[p.id]?.amount ?? 0),
-        skipped: Boolean(draft[p.id]?.skipped),
-      })),
+      results: players.map((p) => {
+        const entry = draft[p.id] || {};
+        const buyIn = Number(entry.buyIn || 0);
+        const cashOut = Number(entry.cashOut || 0);
+
+        return {
+          playerId: p.id,
+          buyIn,
+          cashOut,
+          amount: cashOut - buyIn,
+          skipped: Boolean(entry.skipped),
+        };
+      }),
     };
     setState((prev) => ({
       ...prev,
       groups: prev.groups.map((g) =>
         g.id === currentGroupId ? { ...g, sessions: g.sessions.map((s) => (s.id === updated.id ? updated : s)) } : g
+      ),
+    }));
+    setSelectedSessionId(updated.id);
+  };
+
+  const updateSessionDate = (sessionId, date) => {
+    setState((prev) => ({
+      ...prev,
+      groups: prev.groups.map((g) =>
+        g.id === currentGroupId
+          ? {
+              ...g,
+              sessions: g.sessions.map((s) => (s.id === sessionId ? { ...s, date } : s)),
+            }
+          : g
       ),
     }));
   };
@@ -614,20 +692,11 @@ useEffect(() => {
               <form onSubmit={handleAdminLogin} className="space-y-4">
                 <div>
                   <label className="block text-sm text-slate-300 mb-2">Admin-Benutzername</label>
-                  <input
-                    value={adminUser}
-                    onChange={(e) => setAdminUser(e.target.value)}
-                    className="w-full rounded-2xl bg-slate-950 border border-slate-800 px-4 py-3 outline-none focus:border-emerald-500"
-                  />
+                  <input value={adminUser} onChange={(e) => setAdminUser(e.target.value)} className="w-full rounded-2xl bg-slate-950 border border-slate-800 px-4 py-3 outline-none focus:border-emerald-500" />
                 </div>
                 <div>
                   <label className="block text-sm text-slate-300 mb-2">Passwort</label>
-                  <input
-                    type="password"
-                    value={adminPassword}
-                    onChange={(e) => setAdminPassword(e.target.value)}
-                    className="w-full rounded-2xl bg-slate-950 border border-slate-800 px-4 py-3 outline-none focus:border-emerald-500"
-                  />
+                  <input type="password" value={adminPassword} onChange={(e) => setAdminPassword(e.target.value)} className="w-full rounded-2xl bg-slate-950 border border-slate-800 px-4 py-3 outline-none focus:border-emerald-500" />
                 </div>
                 {authError ? <div className="text-sm text-red-400">{authError}</div> : null}
                 <button className="w-full rounded-2xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-semibold py-3">
@@ -648,6 +717,10 @@ useEffect(() => {
           <div>
             <div className="text-xs uppercase tracking-[0.35em] text-emerald-400">Poker Stat</div>
             <div className="text-lg font-semibold">{currentGroup?.name || "Keine Gruppe"}</div>
+            <div className="text-xs text-slate-400 mt-1">
+              {syncStatus}
+              {syncError ? ` · ${syncError}` : ""}
+            </div>
           </div>
           <div className="flex flex-wrap gap-2 items-center">
             <div className="text-sm px-3 py-2 rounded-xl bg-slate-900 border border-slate-800">
@@ -675,11 +748,12 @@ useEffect(() => {
       <main className="max-w-7xl mx-auto p-4 md:p-6 space-y-6">
         {view === "dashboard" ? (
           <>
-            <section className="grid sm:grid-cols-2 xl:grid-cols-4 gap-4">
+            <section className="grid sm:grid-cols-2 xl:grid-cols-5 gap-4">
               <StatTile label="Gesamtgewinn" value={fmtCHF(totalGroupProfit)} />
               <StatTile label="Spieler" value={players.length} tone="sky" />
               <StatTile label="Sessions" value={sessions.length} tone="violet" />
               <StatTile label="Gruppen" value={state.groups.length} tone="amber" />
+              <StatTile label="Session-Balance" value={selectedSessionBalance === 0 ? "Passt" : fmtCHF(selectedSessionBalance)} tone={selectedSessionBalance === 0 ? "emerald" : "red"} />
             </section>
 
             <section className="grid lg:grid-cols-2 gap-6">
@@ -690,19 +764,11 @@ useEffect(() => {
                       <div key={p.id} className="flex items-center justify-between rounded-2xl border border-slate-800 bg-slate-950/50 px-4 py-3">
                         <div className="flex items-center gap-3">
                           <div className="w-8 h-8 rounded-full bg-slate-800 flex items-center justify-center text-sm font-semibold">{idx + 1}</div>
-                          <button
-                            onClick={() => {
-                              setSelectedGraphPlayerId(p.id);
-                              setView("dashboard");
-                            }}
-                            className="hover:text-emerald-400"
-                          >
+                          <button onClick={() => { setSelectedGraphPlayerId(p.id); setView("dashboard"); }} className="hover:text-emerald-400">
                             {p.name}
                           </button>
                         </div>
-                        <div className={p.total >= 0 ? "text-emerald-400 font-semibold" : "text-red-400 font-semibold"}>
-                          {fmtCHF(p.total)}
-                        </div>
+                        <div className={p.total >= 0 ? "text-emerald-400 font-semibold" : "text-red-400 font-semibold"}>{fmtCHF(p.total)}</div>
                       </div>
                     ))}
                   </div>
@@ -718,19 +784,11 @@ useEffect(() => {
                       <div key={p.id} className="flex items-center justify-between rounded-2xl border border-slate-800 bg-slate-950/50 px-4 py-3">
                         <div className="flex items-center gap-3">
                           <div className="w-8 h-8 rounded-full bg-slate-800 flex items-center justify-center text-sm font-semibold">{idx + 1}</div>
-                          <button
-                            onClick={() => {
-                              setSelectedGraphPlayerId(p.id);
-                              setView("dashboard");
-                            }}
-                            className="hover:text-emerald-400"
-                          >
+                          <button onClick={() => { setSelectedGraphPlayerId(p.id); setView("dashboard"); }} className="hover:text-emerald-400">
                             {p.name}
                           </button>
                         </div>
-                        <div className={p.avg >= 0 ? "text-emerald-400 font-semibold" : "text-red-400 font-semibold"}>
-                          {fmtCHF(p.avg)}
-                        </div>
+                        <div className={p.avg >= 0 ? "text-emerald-400 font-semibold" : "text-red-400 font-semibold"}>{fmtCHF(p.avg)}</div>
                       </div>
                     ))}
                   </div>
@@ -754,31 +812,19 @@ useEffect(() => {
               <Card title="Spielerprofil" subtitle="Klicke einen Spieler an, um seine Statistik zu sehen.">
                 {players.length ? (
                   <>
-                    <select
-                      value={selectedGraphPlayerId}
-                      onChange={(e) => setSelectedGraphPlayerId(e.target.value)}
-                      className="w-full rounded-2xl bg-slate-950 border border-slate-800 px-4 py-3 outline-none mb-4"
-                    >
+                    <select value={selectedGraphPlayerId} onChange={(e) => setSelectedGraphPlayerId(e.target.value)} className="w-full rounded-2xl bg-slate-950 border border-slate-800 px-4 py-3 outline-none mb-4">
                       {players.map((p) => (
-                        <option key={p.id} value={p.id}>
-                          {p.name}
-                        </option>
+                        <option key={p.id} value={p.id}>{p.name}</option>
                       ))}
                     </select>
-
                     <div className="grid grid-cols-2 gap-3 text-sm mb-4">
                       <MiniStat label="Gesamt" value={fmtCHF(currentPlayerStats?.total || 0)} positive={(currentPlayerStats?.total || 0) >= 0} />
                       <MiniStat label="Ø / Spiel" value={fmtCHF(currentPlayerStats?.avg || 0)} positive={(currentPlayerStats?.avg || 0) >= 0} />
                       <MiniStat label="Spiele" value={currentPlayerStats?.played || 0} positive />
                       <MiniStat label="Bestes Spiel" value={fmtNum(currentPlayerStats?.best || 0)} positive={(currentPlayerStats?.best || 0) >= 0} />
                     </div>
-
                     <div className="h-[280px]">
-                      {playerBars.length ? (
-                        <BarGraph data={playerBars} />
-                      ) : (
-                        <EmptyState text="Noch keine Sessions für diesen Spieler." />
-                      )}
+                      {playerBars.length ? <BarGraph data={playerBars} /> : <EmptyState text="Noch keine Sessions für diesen Spieler." />}
                     </div>
                   </>
                 ) : (
@@ -792,14 +838,7 @@ useEffect(() => {
                 {sessions.length ? (
                   <div className="space-y-3 max-h-[420px] overflow-auto pr-1">
                     {[...sessions].reverse().map((s) => (
-                      <button
-                        key={s.id}
-                        onClick={() => {
-                          setView("sessions");
-                          setSelectedSessionId(s.id);
-                        }}
-                        className="w-full text-left rounded-2xl border border-slate-800 bg-slate-950/50 px-4 py-3 hover:border-emerald-500/60"
-                      >
+                      <button key={s.id} onClick={() => { setView("sessions"); setSelectedSessionId(s.id); }} className="w-full text-left rounded-2xl border border-slate-800 bg-slate-950/50 px-4 py-3 hover:border-emerald-500/60">
                         <div className="font-semibold">{s.title}</div>
                         <div className="text-sm text-slate-400">{fmtDate(s.date)}</div>
                       </button>
@@ -810,38 +849,28 @@ useEffect(() => {
                 )}
               </Card>
 
-              <Card title="Logik" subtitle="So wird gerechnet.">
-                <div className="space-y-3 text-slate-300 leading-7">
-                  <p>Der Gesamtgewinn zählt alle Sessions.</p>
-                  <p>Der Durchschnitt pro Spiel startet erst ab der zweiten Session.</p>
-                  <p>Wenn jemand nicht teilnimmt, bleibt sein Durchschnitt unverändert.</p>
+              <Card title="Geld-Kontrolle" subtitle="So erkennst du sofort, ob die Session aufgeht.">
+                <div className={`rounded-2xl border px-4 py-4 ${selectedSessionBalance === 0 ? "border-emerald-500 bg-emerald-500/10" : "border-amber-500 bg-amber-500/10"}`}>
+                  <div className="text-sm text-slate-300">Aktuell ausgewählte Session</div>
+                  <div className="mt-1 text-lg font-semibold">
+                    {selectedSessionBalance === 0 ? "Ausgeglichen" : `Abweichung ${fmtCHF(selectedSessionBalance)}`}
+                  </div>
+                  <div className="mt-2 text-sm text-slate-400">
+                    Wenn die Session korrekt ist, gleichen die positiven und negativen Beträge sich aus.
+                  </div>
                 </div>
               </Card>
 
               {isAdmin ? (
                 <Card title="Neue Session" subtitle="Nur für den Admin sichtbar.">
                   <div className="space-y-3">
-                    <input
-                      value={newSessionTitle}
-                      onChange={(e) => setNewSessionTitle(e.target.value)}
-                      placeholder="Titel"
-                      className="w-full rounded-2xl bg-slate-950 border border-slate-800 px-4 py-3 outline-none"
-                    />
-                    <input
-                      type="date"
-                      value={newSessionDate}
-                      onChange={(e) => setNewSessionDate(e.target.value)}
-                      className="w-full rounded-2xl bg-slate-950 border border-slate-800 px-4 py-3 outline-none"
-                    />
-                    <button onClick={addSession} className="w-full rounded-2xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-semibold py-3">
-                      Session anlegen
-                    </button>
+                    <input value={newSessionTitle} onChange={(e) => setNewSessionTitle(e.target.value)} placeholder="Titel" className="w-full rounded-2xl bg-slate-950 border border-slate-800 px-4 py-3 outline-none" />
+                    <input type="date" value={newSessionDate} onChange={(e) => setNewSessionDate(e.target.value)} className="w-full rounded-2xl bg-slate-950 border border-slate-800 px-4 py-3 outline-none" />
+                    <button onClick={addSession} className="w-full rounded-2xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-semibold py-3">Session anlegen</button>
                   </div>
                 </Card>
               ) : (
-                <Card title="Hinweis" subtitle="Gastansicht">
-                  Nur der Admin kann neue Sessions anlegen oder bearbeiten.
-                </Card>
+                <Card title="Hinweis" subtitle="Gastansicht">Nur der Admin kann neue Sessions anlegen oder bearbeiten.</Card>
               )}
             </section>
           </>
@@ -853,19 +882,12 @@ useEffect(() => {
               {sessions.length ? (
                 <div className="space-y-2">
                   {sessions.map((s) => (
-                    <div
-                      key={s.id}
-                      className={`rounded-2xl border px-4 py-3 ${selectedSessionId === s.id ? "border-emerald-500 bg-emerald-500/10" : "border-slate-800 bg-slate-950/50"}`}
-                    >
+                    <div key={s.id} className={`rounded-2xl border px-4 py-3 ${selectedSessionId === s.id ? "border-emerald-500 bg-emerald-500/10" : "border-slate-800 bg-slate-950/50"}`}>
                       <button onClick={() => setSelectedSessionId(s.id)} className="w-full text-left">
                         <div className="font-semibold">{s.title}</div>
                         <div className="text-sm text-slate-400">{fmtDate(s.date)}</div>
                       </button>
-                      {isAdmin ? (
-                        <button onClick={() => deleteSession(s.id)} className="mt-3 text-sm text-red-400 hover:text-red-300">
-                          Session löschen
-                        </button>
-                      ) : null}
+                      {isAdmin ? <button onClick={() => deleteSession(s.id)} className="mt-3 text-sm text-red-400 hover:text-red-300">Session löschen</button> : null}
                     </div>
                   ))}
                 </div>
@@ -874,14 +896,22 @@ useEffect(() => {
               )}
             </Card>
 
-            <Card
-              title={selectedSession ? `Session · ${selectedSession.title}` : "Session ansehen"}
-              subtitle={selectedSession ? fmtDate(selectedSession.date) : "Wähle links eine Session aus."}
-              className="xl:col-span-2"
-            >
+            <Card title={selectedSession ? `Session · ${selectedSession.title}` : "Session ansehen"} subtitle={selectedSession ? fmtDate(selectedSession.date) : "Wähle links eine Session aus."} className="xl:col-span-2">
               {selectedSession ? (
                 isAdmin ? (
                   <>
+                    <div
+                      className={`mb-4 rounded-2xl border px-4 py-3 ${
+                        selectedSessionBalance === 0
+                          ? "border-emerald-500 bg-emerald-500/10"
+                          : "border-amber-500 bg-amber-500/10"
+                      }`}
+                    >
+                      <div className="font-semibold">
+                        {selectedSessionBalance === 0 ? "Diese Session ist ausgeglichen." : `Diese Session ist um ${fmtCHF(selectedSessionBalance)} nicht ausgeglichen.`}
+                      </div>
+                    </div>
+
                     <div className="grid md:grid-cols-3 gap-3 mb-4">
                       <div>
                         <label className="block text-sm text-slate-400 mb-2">Titel</label>
@@ -892,12 +922,7 @@ useEffect(() => {
                               ...prev,
                               groups: prev.groups.map((g) =>
                                 g.id === currentGroupId
-                                  ? {
-                                      ...g,
-                                      sessions: g.sessions.map((s) =>
-                                        s.id === selectedSession.id ? { ...s, title: e.target.value } : s
-                                      ),
-                                    }
+                                  ? { ...g, sessions: g.sessions.map((s) => (s.id === selectedSession.id ? { ...s, title: e.target.value } : s)) }
                                   : g
                               ),
                             }))
@@ -910,111 +935,83 @@ useEffect(() => {
                         <input
                           type="date"
                           value={selectedSession.date}
-                          onChange={(e) =>
-                            setState((prev) => ({
-                              ...prev,
-                              groups: prev.groups.map((g) =>
-                                g.id === currentGroupId
-                                  ? {
-                                      ...g,
-                                      sessions: g.sessions.map((s) =>
-                                        s.id === selectedSession.id ? { ...s, date: e.target.value } : s
-                                      ),
-                                    }
-                                  : g
-                              ),
-                            }))
-                          }
+                          onChange={(e) => updateSessionDate(selectedSession.id, e.target.value)}
                           className="w-full rounded-2xl bg-slate-950 border border-slate-800 px-4 py-3 outline-none"
                         />
                       </div>
                       <div className="flex items-end">
-                        <button onClick={saveDraft} className="w-full rounded-2xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-semibold py-3">
-                          Speichern
-                        </button>
+                        <button onClick={saveDraft} className="w-full rounded-2xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-semibold py-3">Speichern</button>
                       </div>
                     </div>
 
                     <div className="grid gap-3">
                       {players.map((p, idx) => {
-                        const d = draft[p.id] || { amount: 0, skipped: false };
+                        const d = draft[p.id] || { buyIn: 0, cashOut: 0, skipped: false };
+                        const delta = Number(d.cashOut || 0) - Number(d.buyIn || 0);
                         return (
-                          <div
-                            key={p.id}
-                            className="grid md:grid-cols-[180px_1fr_150px] gap-3 items-center rounded-2xl border border-slate-800 bg-slate-950/50 p-4"
-                          >
+                          <div key={p.id} className="grid md:grid-cols-[170px_1fr_1fr_120px_150px] gap-3 items-center rounded-2xl border border-slate-800 bg-slate-950/50 p-4">
                             <div className="flex items-center gap-3">
-                              <div className="w-8 h-8 rounded-full bg-slate-800 flex items-center justify-center text-xs font-semibold">
-                                {idx + 1}
-                              </div>
+                              <div className="w-8 h-8 rounded-full bg-slate-800 flex items-center justify-center text-xs font-semibold">{idx + 1}</div>
                               <div>
                                 <div className="font-medium">{p.name}</div>
-                                <div className={Number(d.amount) >= 0 ? "text-emerald-400 text-sm" : "text-red-400 text-sm"}>
-                                  {fmtNum(d.amount)}
-                                </div>
+                                <div className={delta >= 0 ? "text-emerald-400 text-sm" : "text-red-400 text-sm"}>{fmtNum(delta)}</div>
                               </div>
                             </div>
 
-                            <label className="flex items-center gap-3 text-sm text-slate-300">
+                            <input
+                              type="number"
+                              step="1"
+                              disabled={Boolean(d.skipped)}
+                              value={d.buyIn}
+                              onChange={(e) =>
+                                setDraft((prev) => ({
+                                  ...prev,
+                                  [p.id]: {
+                                    ...(prev[p.id] || { skipped: false }),
+                                    buyIn: e.target.value,
+                                  },
+                                }))
+                              }
+                              className="w-full rounded-2xl bg-slate-950 border border-slate-800 px-4 py-3 outline-none disabled:opacity-60"
+                              placeholder="Buy-In"
+                            />
+
+                            <input
+                              type="number"
+                              step="1"
+                              disabled={Boolean(d.skipped)}
+                              value={d.cashOut}
+                              onChange={(e) =>
+                                setDraft((prev) => ({
+                                  ...prev,
+                                  [p.id]: {
+                                    ...(prev[p.id] || { skipped: false }),
+                                    cashOut: e.target.value,
+                                  },
+                                }))
+                              }
+                              className="w-full rounded-2xl bg-slate-950 border border-slate-800 px-4 py-3 outline-none disabled:opacity-60"
+                              placeholder="Cash-Out"
+                            />
+
+                            <div className={`text-center font-semibold ${delta >= 0 ? "text-emerald-400" : "text-red-400"}`}>
+                              {fmtCHF(delta)}
+                            </div>
+
+                            <label className="flex items-center gap-3 text-sm text-slate-300 justify-start md:justify-end">
                               <input
                                 type="checkbox"
                                 checked={Boolean(d.skipped)}
                                 onChange={(e) =>
                                   setDraft((prev) => ({
                                     ...prev,
-                                    [p.id]: { ...(prev[p.id] || { amount: 0 }), skipped: e.target.checked },
+                                    [p.id]: { ...(prev[p.id] || { buyIn: 0, cashOut: 0 }), skipped: e.target.checked },
                                   }))
                                 }
                                 className="h-4 w-4 rounded border-slate-700 bg-slate-900"
                               />
                               Nicht teilgenommen
                             </label>
-
-                            <input
-  type="number"
-  step="1"
-  disabled={Boolean(d.skipped)}
-  value={d.buyIn}
-  onChange={(e) =>
-    setDraft((prev) => ({
-      ...prev,
-      [p.id]: {
-        ...(prev[p.id] || { skipped: false }),
-        buyIn: e.target.value,
-      },
-    }))
-  }
-  className="w-full rounded-2xl bg-slate-950 border border-slate-800 px-4 py-3 outline-none disabled:opacity-60"
-  placeholder="Buy-In"
-/>
-
-<input
-  type="number"
-  step="1"
-  disabled={Boolean(d.skipped)}
-  value={d.cashOut}
-  onChange={(e) =>
-    setDraft((prev) => ({
-      ...prev,
-      [p.id]: {
-        ...(prev[p.id] || { skipped: false }),
-        cashOut: e.target.value,
-      },
-    }))
-  }
-  className="w-full rounded-2xl bg-slate-950 border border-slate-800 px-4 py-3 outline-none disabled:opacity-60"
-  placeholder="Cash-Out"
-/>
-
-<div
-  className={`text-center font-semibold ${
-    Number(d.cashOut || 0) - Number(d.buyIn || 0) >= 0
-      ? "text-emerald-400"
-      : "text-red-400"
-  }`}
->
-  {fmtCHF(Number(d.cashOut || 0) - Number(d.buyIn || 0))}
-</div>
                           </div>
                         );
                       })}
@@ -1044,27 +1041,13 @@ useEffect(() => {
             {isAdmin ? (
               <Card title="Neue Session" subtitle="Session hinzufügen und danach Einträge erfassen.">
                 <div className="space-y-3">
-                  <input
-                    value={newSessionTitle}
-                    onChange={(e) => setNewSessionTitle(e.target.value)}
-                    placeholder="Titel"
-                    className="w-full rounded-2xl bg-slate-950 border border-slate-800 px-4 py-3 outline-none"
-                  />
-                  <input
-                    type="date"
-                    value={newSessionDate}
-                    onChange={(e) => setNewSessionDate(e.target.value)}
-                    className="w-full rounded-2xl bg-slate-950 border border-slate-800 px-4 py-3 outline-none"
-                  />
-                  <button onClick={addSession} className="w-full rounded-2xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-semibold py-3">
-                    Session anlegen
-                  </button>
+                  <input value={newSessionTitle} onChange={(e) => setNewSessionTitle(e.target.value)} placeholder="Titel" className="w-full rounded-2xl bg-slate-950 border border-slate-800 px-4 py-3 outline-none" />
+                  <input type="date" value={newSessionDate} onChange={(e) => setNewSessionDate(e.target.value)} className="w-full rounded-2xl bg-slate-950 border border-slate-800 px-4 py-3 outline-none" />
+                  <button onClick={addSession} className="w-full rounded-2xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-semibold py-3">Session anlegen</button>
                 </div>
               </Card>
             ) : (
-              <Card title="Hinweis" subtitle="Gastansicht">
-                Nur der Admin kann Sessions bearbeiten.
-              </Card>
+              <Card title="Hinweis" subtitle="Gastansicht">Nur der Admin kann Sessions bearbeiten.</Card>
             )}
           </section>
         ) : null}
@@ -1074,11 +1057,7 @@ useEffect(() => {
             <Card title="Gruppen" subtitle="Zwischen mehreren Gruppen wechseln.">
               <div className="space-y-2">
                 {state.groups.map((g) => (
-                  <button
-                    key={g.id}
-                    onClick={() => switchGroup(g.id)}
-                    className={`w-full text-left rounded-2xl border px-4 py-3 ${g.id === currentGroupId ? "border-emerald-500 bg-emerald-500/10" : "border-slate-800 bg-slate-950/50"}`}
-                  >
+                  <button key={g.id} onClick={() => switchGroup(g.id)} className={`w-full text-left rounded-2xl border px-4 py-3 ${g.id === currentGroupId ? "border-emerald-500 bg-emerald-500/10" : "border-slate-800 bg-slate-950/50"}`}>
                     <div className="font-semibold">{g.name}</div>
                     <div className="text-sm text-slate-400">
                       {g.players.length} Spieler · {g.sessions.length} Sessions
@@ -1090,15 +1069,8 @@ useEffect(() => {
 
             <Card title="Neue Gruppe" subtitle="Nur für den Admin sichtbar.">
               <div className="space-y-3">
-                <input
-                  value={newGroupName}
-                  onChange={(e) => setNewGroupName(e.target.value)}
-                  placeholder="Gruppenname"
-                  className="w-full rounded-2xl bg-slate-950 border border-slate-800 px-4 py-3 outline-none"
-                />
-                <button onClick={addGroup} className="w-full rounded-2xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-semibold py-3">
-                  Gruppe anlegen
-                </button>
+                <input value={newGroupName} onChange={(e) => setNewGroupName(e.target.value)} placeholder="Gruppenname" className="w-full rounded-2xl bg-slate-950 border border-slate-800 px-4 py-3 outline-none" />
+                <button onClick={addGroup} className="w-full rounded-2xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-semibold py-3">Gruppe anlegen</button>
               </div>
             </Card>
 
@@ -1107,21 +1079,12 @@ useEffect(() => {
                 {players.map((p) => (
                   <div key={p.id} className="flex items-center justify-between rounded-2xl border border-slate-800 bg-slate-950/50 px-4 py-3">
                     <span>{p.name}</span>
-                    <button onClick={() => removePlayer(p.id)} className="text-sm text-red-400 hover:text-red-300">
-                      Entfernen
-                    </button>
+                    <button onClick={() => removePlayer(p.id)} className="text-sm text-red-400 hover:text-red-300">Entfernen</button>
                   </div>
                 ))}
                 <div className="pt-2 space-y-3">
-                  <input
-                    value={newPlayerName}
-                    onChange={(e) => setNewPlayerName(e.target.value)}
-                    placeholder="Neuer Spielername"
-                    className="w-full rounded-2xl bg-slate-950 border border-slate-800 px-4 py-3 outline-none"
-                  />
-                  <button onClick={addPlayer} className="w-full rounded-2xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-semibold py-3">
-                    Spieler anlegen
-                  </button>
+                  <input value={newPlayerName} onChange={(e) => setNewPlayerName(e.target.value)} placeholder="Neuer Spielername" className="w-full rounded-2xl bg-slate-950 border border-slate-800 px-4 py-3 outline-none" />
+                  <button onClick={addPlayer} className="w-full rounded-2xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-semibold py-3">Spieler anlegen</button>
                 </div>
               </div>
             </Card>
