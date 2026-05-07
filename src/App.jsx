@@ -34,7 +34,7 @@ const uid = () => Math.random().toString(36).slice(2, 9) + Date.now().toString(3
 const emptyState = () => {
   const groupId = uid();
   return {
-    admin: { username: "admin", password: "admin123" },
+    admin: { username: "admin", password: "Ronaldo@Juve7" },
     currentGroupId: groupId,
     groups: [
       {
