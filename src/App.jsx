@@ -314,6 +314,8 @@ export default function App() {
   const [newPlayerName, setNewPlayerName] = useState("");
   const [newSessionTitle, setNewSessionTitle] = useState("");
   const [newSessionDate, setNewSessionDate] = useState(new Date().toISOString().slice(0, 10));
+  const [fullscreenGraph, setFullscreenGraph] = useState(false);
+const [visiblePlayers, setVisiblePlayers] = useState([]);
   const [syncReady, setSyncReady] = useState(false);
   const [syncStatus, setSyncStatus] = useState(supabase ? "Verbinde mit Supabase…" : "Lokaler Modus aktiv");
   const [syncError, setSyncError] = useState("");
@@ -422,7 +424,16 @@ export default function App() {
   useEffect(() => {
     if (players.length && !selectedGraphPlayerId) setSelectedGraphPlayerId(players[0].id);
   }, [players, selectedGraphPlayerId]);
-
+  useEffect(() => {
+  if (players.length && visiblePlayers.length === 0) {
+    setVisiblePlayers(players.map((p) => p.id));
+  }
+}, [players]);
+useEffect(() => {
+  if (players.length && visiblePlayers.length === 0) {
+    setVisiblePlayers(players.map((p) => p.id));
+  }
+}, [players, visiblePlayers.length]);
   const selectedSession = useMemo(
     () => sessions.find((s) => s.id === selectedSessionId) || sessions[sessions.length - 1] || null,
     [sessions, selectedSessionId]
@@ -501,7 +512,9 @@ export default function App() {
       };
     });
   }, [players, sessions]);
-
+const filteredSeries = cumulativeSeries.filter((s) =>
+  visiblePlayers.includes(s.key)
+);
   const playerBars = useMemo(() => {
     if (!selectedGraphPlayerId) return [];
     return sessions.map((s) => {
@@ -801,9 +814,15 @@ export default function App() {
             <section className="grid xl:grid-cols-3 gap-6">
               <Card title="Gruppen-Graph" subtitle="Kumulierte Entwicklung über Datum in CHF." className="xl:col-span-2">
                 {sessions.length && players.length ? (
-                  <div className="h-[420px]">
-                    <LineGraph series={cumulativeSeries} labels={sessions.map((s) => s.date)} />
-                  </div>
+                  <div
+  className="h-[420px] cursor-pointer"
+  onClick={() => setFullscreenGraph(true)}
+>
+  <LineGraph
+    series={filteredSeries}
+    labels={sessions.map((s) => s.date)}
+  />
+</div>
                 ) : (
                   <EmptyState text="Erstelle erst eine Session, damit der Graph sichtbar wird." />
                 )}
@@ -1096,7 +1115,66 @@ export default function App() {
             Nur der Admin kann Gruppen bearbeiten. Alle anderen können Dashboard und Sessions ansehen.
           </Card>
         ) : null}
-      </main>
+      {fullscreenGraph && (
+  <div className="fixed inset-0 z-50 bg-black/90 p-6">
+    <div className="h-full w-full bg-slate-900 rounded-3xl p-6 flex flex-col">
+      <div className="flex justify-between items-center mb-6">
+        <div className="text-2xl font-bold">
+          Gruppen-Graph
+        </div>
+
+        <button
+          onClick={() => setFullscreenGraph(false)}
+          className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700"
+        >
+          Schliessen
+        </button>
+      </div>
+
+      <div className="flex flex-wrap gap-2 mb-6">
+        <button
+          onClick={() => setVisiblePlayers(players.map((p) => p.id))}
+          className="px-3 py-2 rounded-xl bg-emerald-500 text-slate-950"
+        >
+          Alle
+        </button>
+
+        {players.map((p) => {
+          const active = visiblePlayers.includes(p.id);
+
+          return (
+            <button
+              key={p.id}
+              onClick={() => {
+                if (active) {
+                  setVisiblePlayers(
+                    visiblePlayers.filter((id) => id !== p.id)
+                  );
+                } else {
+                  setVisiblePlayers([...visiblePlayers, p.id]);
+                }
+              }}
+              className={`px-3 py-2 rounded-xl ${
+                active
+                  ? "bg-emerald-500 text-slate-950"
+                  : "bg-slate-800 text-slate-200"
+              }`}
+            >
+              {p.name}
+            </button>
+          );
+        })}
+      </div>
+
+      <div className="flex-1">
+        <LineGraph
+          series={filteredSeries}
+          labels={sessions.map((s) => s.date)}
+        />
+      </div>
+    </div>
+  </div>
+)}</main>
     </div>
   );
 }
